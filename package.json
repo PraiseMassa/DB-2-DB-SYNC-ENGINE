@@ -1,0 +1,26 @@
+{
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "db:generate": "drizzle-kit generate",
+    "db:migrate": "drizzle-kit migrate",
+    "db:studio": "drizzle-kit studio",
+    "seed": "tsx src/seed-students.ts"
+  },
+  "dependencies": {
+    "@supabase/realtime-js": "^2.95.3",
+    "@supabase/supabase-js": "^2.95.3",
+    "drizzle-orm": "^0.45.1",
+    "hono": "^4.11.9",
+    "postgres": "^3.4.8"
+  },
+  "devDependencies": {
+    "@types/node": "^25.2.3",
+    "@types/pg": "^8.16.0",
+    "dotenv": "^17.3.1",
+    "drizzle-kit": "^0.31.9",
+    "tsx": "^4.21.0",
+    "typescript": "^5.9.3",
+    "wrangler": "^4.65.0"
+  }
+}
