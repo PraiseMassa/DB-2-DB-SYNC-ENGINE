@@ -314,3 +314,21 @@ app.get('/api/debug/queue', async (c) => {
     }, 500);
   }
 });
+
+// Force restart Realtime listener
+app.post('/api/debug/restart-realtime', async (c) => {
+  try {
+    // @ts-ignore - access internal function
+    const { startRealtimeListener } = await import('./realtime-listener');
+    
+    // Run in background
+    c.executionCtx.waitUntil((async () => {
+      console.log('🔄 Manually restarting Realtime listener...');
+      await startRealtimeListener(c.env);
+    })());
+    
+    return c.json({ message: 'Realtime listener restart triggered' });
+  } catch (error: any) {
+    return c.json({ error: error.message }, 500);
+  }
+});
