@@ -1,4 +1,4 @@
-import { createClient, RealtimeChannel } from '@supabase/supabase-js';
+import { RealtimeClient, REALTIME_POSTGRES_CHANGES_LISTEN_EVENT } from '@supabase/realtime-js';
 
 export interface Env {
   SUPABASE_URL: string;
@@ -7,139 +7,210 @@ export interface Env {
   SYNC_QUEUE: Queue;
 }
 
-// Cloudflare-compatible WebSocket
-class CloudflareWebSocket {
+interface StudentRecord {
+  id: number;
+  name: string;
+  email: string;
+  age: number | null;
+  course: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+// Custom WebSocket adapter for Cloudflare Workers
+class CFWebSocketAdapter {
   private ws: WebSocket;
-  
+  public onopen: (() => void) | null = null;
+  public onclose: ((event: any) => void) | null = null;
+  public onerror: ((event: any) => void) | null = null;
+  public onmessage: ((event: any) => void) | null = null;
+
   constructor(url: string, protocols?: string | string[]) {
-    // Critical: Don't pass empty protocols array
+    // CRITICAL: Never pass empty protocols array
     const finalProtocols = protocols && protocols.length > 0 ? protocols : undefined;
     
-    // @ts-ignore - Cloudflare's WebSocket expects different signature
+    // @ts-ignore - Cloudflare Workers WebSocket constructor
     this.ws = new WebSocket(url, finalProtocols);
     
-    // Bind event handlers
-    this.ws.addEventListener('message', (event) => {
-      if (this.onmessage) this.onmessage(event);
-    });
-    
     this.ws.addEventListener('open', () => {
+      console.log('🔌 WebSocket connection opened');
       if (this.onopen) this.onopen();
     });
     
     this.ws.addEventListener('close', (event) => {
+      console.log('🔌 WebSocket connection closed:', event.code, event.reason);
       if (this.onclose) this.onclose(event);
     });
     
     this.ws.addEventListener('error', (event) => {
+      console.error('🔌 WebSocket error:', event);
       if (this.onerror) this.onerror(event);
     });
+    
+    this.ws.addEventListener('message', (event) => {
+      if (this.onmessage) this.onmessage(event);
+    });
   }
-  
-  onopen: (() => void) | null = null;
-  onclose: ((event: any) => void) | null = null;
-  onerror: ((event: any) => void) | null = null;
-  onmessage: ((event: any) => void) | null = null;
-  
+
   send(data: any) {
     this.ws.send(data);
   }
-  
+
   close(code?: number, reason?: string) {
     this.ws.close(code, reason);
   }
 }
 
-let currentChannel: RealtimeChannel | null = null;
+let client: RealtimeClient | null = null;
 let reconnectAttempts = 0;
 const MAX_RECONNECT_ATTEMPTS = 10;
 
 export async function startRealtimeListener(env: Env) {
-  // Close existing channel if any
-  if (currentChannel) {
-    console.log('🔄 Closing existing Realtime channel...');
-    await currentChannel.unsubscribe();
-    currentChannel = null;
+  // Close existing client if any
+  if (client) {
+    console.log('🔄 Disconnecting existing Realtime client...');
+    client.disconnect();
+    client = null;
   }
 
-  console.log('🔌 Starting Realtime listener for students table...');
+  console.log('🔌 Starting Supabase Realtime listener...');
   
   try {
-    // Create Supabase client with custom WebSocket
-    const supabase = createClient(env.SUPABASE_URL, env.SUPABASE_ANON_KEY, {
-      realtime: {
-        params: {
-          eventsPerSecond: 10,
-        },
-        // @ts-ignore - Custom WebSocket transport
-        transport: CloudflareWebSocket,
+    // Construct the Realtime URL
+    const realtimeUrl = env.SUPABASE_URL.replace('https', 'wss') + '/realtime/v1';
+    console.log('📡 Realtime URL:', realtimeUrl);
+    
+    // Create the realtime client
+    client = new RealtimeClient(realtimeUrl, {
+      params: {
+        apikey: env.SUPABASE_ANON_KEY,
+      },
+      // @ts-ignore - Custom WebSocket transport
+      transport: CFWebSocketAdapter,
+      heartbeatIntervalMs: 15000,
+    });
+
+    // Set up connection handler - RealtimeClient uses a different API
+    // We need to check connection status through the channels
+    
+    // Connect to Realtime
+    client.connect();
+
+    // Create a channel for students table
+    const channel = client.channel('realtime:public:students');
+
+    // Subscribe to INSERT events
+    channel.on(
+      'postgres_changes',
+      { 
+        event: REALTIME_POSTGRES_CHANGES_LISTEN_EVENT.INSERT, 
+        schema: 'public', 
+        table: 'students' 
+      },
+      async (payload: any) => {
+        console.log('📝 INSERT detected:', payload.new?.id);
+        if (payload.new) {
+          await queueSync(env, {
+            recordId: payload.new.id,
+            operation: 'INSERT',
+            data: payload.new,
+            timestamp: new Date().toISOString(),
+            retryCount: 0
+          });
+        }
+      }
+    );
+
+    // Subscribe to UPDATE events
+    channel.on(
+      'postgres_changes',
+      { 
+        event: REALTIME_POSTGRES_CHANGES_LISTEN_EVENT.UPDATE, 
+        schema: 'public', 
+        table: 'students' 
+      },
+      async (payload: any) => {
+        console.log('📝 UPDATE detected:', payload.new?.id);
+        if (payload.new) {
+          await queueSync(env, {
+            recordId: payload.new.id,
+            operation: 'UPDATE',
+            data: payload.new,
+            timestamp: new Date().toISOString(),
+            retryCount: 0
+          });
+        }
+      }
+    );
+
+    // Subscribe to DELETE events
+    channel.on(
+      'postgres_changes',
+      { 
+        event: REALTIME_POSTGRES_CHANGES_LISTEN_EVENT.DELETE, 
+        schema: 'public', 
+        table: 'students' 
+      },
+      async (payload: any) => {
+        console.log('📝 DELETE detected:', payload.old?.id);
+        if (payload.old) {
+          await queueSync(env, {
+            recordId: payload.old.id,
+            operation: 'DELETE',
+            data: payload.old,
+            timestamp: new Date().toISOString(),
+            retryCount: 0
+          });
+        }
+      }
+    );
+
+    // Subscribe to the channel
+    channel.subscribe((status: string, err?: Error) => {
+      console.log('📡 Channel subscription status:', status);
+      
+      if (status === 'SUBSCRIBED') {
+        console.log('✅ Successfully subscribed to students table changes!');
+        reconnectAttempts = 0;
+      } else if (status === 'CHANNEL_ERROR') {
+        console.error('❌ Channel error:', err?.message || 'Unknown error');
+        
+        // Exponential backoff for reconnection
+        if (reconnectAttempts < MAX_RECONNECT_ATTEMPTS) {
+          const delay = Math.min(1000 * Math.pow(2, reconnectAttempts), 30000);
+          reconnectAttempts++;
+          console.log(`⏰ Reconnecting in ${delay}ms (attempt ${reconnectAttempts}/${MAX_RECONNECT_ATTEMPTS})`);
+          
+          setTimeout(() => {
+            channel.subscribe();
+          }, delay);
+        }
+      } else if (status === 'TIMED_OUT') {
+        console.error('❌ Subscription timed out');
+        setTimeout(() => channel.subscribe(), 5000);
+      } else if (status === 'CLOSED') {
+        console.log('📡 Channel closed');
       }
     });
-    
-    // Create a unique channel name
-    const channelName = `students-changes-${Date.now()}`;
-    
-    const channel = supabase
-      .channel(channelName)
-      .on(
-        'postgres_changes',
-        {
-          event: '*',
-          schema: 'public',
-          table: 'students',
-        },
-        async (payload: any) => {
-          console.log(`📝 ${payload.eventType} detected! ID:`, payload.new?.id || payload.old?.id);
-          
-          try {
-            const recordId = payload.new?.id || payload.old?.id;
-            const operation = payload.eventType === 'INSERT' ? 'INSERT' : 
-                            payload.eventType === 'UPDATE' ? 'UPDATE' : 'DELETE';
-            const data = payload.new || payload.old;
-            
-            await env.SYNC_QUEUE.send({
-              recordId,
-              operation,
-              data,
-              timestamp: new Date().toISOString(),
-              retryCount: 0
-            });
-            
-            console.log(`📤 Queued ${operation} for record ${recordId}`);
-            reconnectAttempts = 0;
-            
-          } catch (err) {
-            console.error('❌ Error processing change:', err);
-          }
-        }
-      )
-      .subscribe((status) => {
-        console.log('📡 Realtime status:', status);
-        
-        if (status === 'SUBSCRIBED') {
-          console.log('✅ SUCCESS! Listening to students table changes');
-          currentChannel = channel;
-          reconnectAttempts = 0;
-        } else if (status === 'CHANNEL_ERROR') {
-          console.error('❌ Channel error (expected, retrying...)');
-          
-          if (reconnectAttempts < MAX_RECONNECT_ATTEMPTS) {
-            const delay = Math.min(1000 * Math.pow(2, reconnectAttempts), 30000);
-            reconnectAttempts++;
-            console.log(`⏰ Retry ${reconnectAttempts}/${MAX_RECONNECT_ATTEMPTS} in ${delay}ms`);
-            
-            setTimeout(() => {
-              channel.unsubscribe();
-              startRealtimeListener(env);
-            }, delay);
-          }
-        }
-      });
-    
-    return channel;
-    
+
+    // Log client connection status through channel events
+    console.log('✅ Realtime client setup complete');
+
+    return client;
+
   } catch (error) {
     console.error('❌ Failed to start Realtime listener:', error);
     throw error;
+  }
+}
+
+async function queueSync(env: Env, message: any) {
+  try {
+    await env.SYNC_QUEUE.send(message, {
+      contentType: 'json',
+    });
+    console.log(`📤 Queued ${message.operation} for record ${message.recordId}`);
+  } catch (error) {
+    console.error('❌ Failed to queue message:', error);
   }
 }

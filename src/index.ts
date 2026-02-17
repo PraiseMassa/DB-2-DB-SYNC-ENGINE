@@ -3,7 +3,7 @@ import { drizzle } from 'drizzle-orm/postgres-js';
 import postgres from 'postgres';
 import { students, studentSnapshots, syncLogs } from './db/schema';
 import { eq, sql } from 'drizzle-orm';
-import { startRealtimeListener } from './realtime-listener';
+import { startRealtimeListener } from './realtime-http';
 
 type Bindings = {
   DATABASE_URL: string;
@@ -280,9 +280,101 @@ export default {
   },
 
   async queue(batch: MessageBatch<QueueMessage>, env: Bindings) {
-    console.log(`📦 Queue received batch of ${batch.messages.length} messages`);
-    // ... rest of your queue handler (keep as is)
+  console.log(`📦 Queue received batch of ${batch.messages.length} messages`);
+  
+  // Create database connection
+  const client = postgres(env.WORKER_DATABASE_URL || env.DATABASE_URL);
+  const db = drizzle(client);
+  
+  for (const message of batch.messages) {
+    const { recordId, operation, data, retryCount = 0 } = message.body;
+    
+    console.log(`🔄 Processing: ${operation} for record ${recordId} (attempt ${retryCount + 1})`);
+    
+    try {
+      if (operation === 'DEBUG') {
+        console.log('🔍 Debug message received');
+        await message.ack();
+        continue;
+      }
+      
+      // Check if snapshot exists
+      const existing = await db
+        .select()
+        .from(studentSnapshots)
+        .where(eq(studentSnapshots.studentId, recordId))
+        .limit(1);
+      
+      // Sanitize data to ensure it's JSON-serializable
+      const sanitizedData = JSON.parse(JSON.stringify(data));
+      
+      if (existing.length > 0) {
+        // Update existing snapshot
+        await db
+          .update(studentSnapshots)
+          .set({
+            data: sanitizedData,
+            lastSyncedAt: new Date(),
+            syncStatus: 'synced'
+          })
+          .where(eq(studentSnapshots.studentId, recordId));
+        console.log(`✅ Updated snapshot for record ${recordId}`);
+      } else {
+        // Insert new snapshot
+        await db.insert(studentSnapshots).values({
+          studentId: recordId,
+          data: sanitizedData,
+          syncStatus: 'synced'
+        });
+        console.log(`✅ Inserted snapshot for record ${recordId}`);
+      }
+      
+      // Log success
+      await db.insert(syncLogs).values({
+        recordId,
+        operation,
+        status: 'success',
+        metadata: { 
+          retryCount,
+          timestamp: new Date().toISOString() 
+        }
+      });
+      
+      await message.ack();
+      
+    } catch (error: any) {
+      console.error(`❌ Failed to sync record ${recordId}:`, error.message);
+      
+      // Log failure
+      try {
+        await db.insert(syncLogs).values({
+          recordId,
+          operation,
+          status: 'failed',
+          errorDetails: error.message,
+          metadata: { 
+            retryCount, 
+            timestamp: new Date().toISOString() 
+          }
+        });
+      } catch (logError) {
+        console.error('❌ Failed to log error:', logError);
+      }
+      
+      // Retry logic
+      if (retryCount < 3) {
+        const delaySeconds = Math.pow(2, retryCount) * 5;
+        console.log(`⏰ Retrying in ${delaySeconds}s`);
+        await message.retry({ delaySeconds });
+      } else {
+        console.log(`❌ Max retries exceeded for record ${recordId}`);
+        await message.ack();
+      }
+    }
   }
+  
+  await client.end();
+}
 };
 
 app.get('/api/debug/realtime', async (c) => {
@@ -330,5 +422,164 @@ app.post('/api/debug/restart-realtime', async (c) => {
     return c.json({ message: 'Realtime listener restart triggered' });
   } catch (error: any) {
     return c.json({ error: error.message }, 500);
+  }
+});
+
+// Add this route
+// Better test insert endpoint with error handling
+app.post('/api/test/insert', async (c) => {
+  try {
+    // Log the raw request
+    console.log('📥 Received test insert request');
+    
+    const body = await c.req.json();
+    console.log('Request body:', body);
+    
+    // Validate required fields
+    if (!body.email) {
+      return c.json({ error: 'Email is required' }, 400);
+    }
+    
+    const db = c.get('db');
+    
+    const result = await db.insert(students).values({
+      name: body.name || 'Test User',
+      email: body.email,
+      age: body.age || 25,
+      course: body.course || 'Testing'
+    }).returning();
+    
+    console.log('✅ Student inserted:', result[0].id);
+    
+    return c.json({ 
+      success: true, 
+      message: 'Student inserted', 
+      student: result[0] 
+    });
+  } catch (error: any) {
+    console.error('❌ Insert error:', error);
+    return c.json({ 
+      error: error.message,
+      stack: error.stack 
+    }, 500);
+  }
+});
+
+// Add this route
+app.get('/api/debug/routes', (c) => {
+  return c.json({ 
+    message: 'Available routes',
+    routes: [
+      'GET /',
+      'POST /api/test/insert',
+      'GET /api/sync/logs',
+      'GET /api/sync/status/:studentId?',
+      'POST /api/sync/backfill',
+      'POST /api/sync/reconcile',
+      'POST /api/sync/retry-failed',
+      'GET /api/debug/realtime',
+      'POST /api/debug/restart-realtime',
+      'GET /api/debug/routes',
+      'GET /api/sync/logs-raw'
+    ]
+  });
+});
+
+// Simple raw SQL test endpoint
+app.post('/api/test/insert-raw', async (c) => {
+  try {
+    const body = await c.req.json();
+    console.log('Raw insert request:', body);
+    
+    // Create a direct PostgreSQL connection
+    const { default: postgres } = await import('postgres');
+    const sql = postgres(c.env.WORKER_DATABASE_URL || c.env.DATABASE_URL);
+    
+    // Simple insert with raw SQL
+    const result = await sql`
+      INSERT INTO students (name, email, age, course) 
+      VALUES (${body.name}, ${body.email}, ${body.age}, ${body.course})
+      RETURNING *
+    `;
+    
+    await sql.end();
+    
+    return c.json({ 
+      success: true, 
+      message: 'Student inserted with raw SQL',
+      student: result[0] 
+    });
+  } catch (error: any) {
+    console.error('Raw insert error:', error);
+    return c.json({ error: error.message, stack: error.stack }, 500);
+  }
+});
+
+app.get('/api/debug/test-db', async (c) => {
+  try {
+    const { default: postgres } = await import('postgres');
+    const sql = postgres(c.env.WORKER_DATABASE_URL || c.env.DATABASE_URL);
+    
+    const result = await sql`SELECT NOW() as time`;
+    await sql.end();
+    
+    return c.json({ 
+      success: true, 
+      message: 'Database connected!',
+      time: result[0].time 
+    });
+  } catch (error: any) {
+    return c.json({ error: error.message }, 500);
+  }
+});
+
+// Update this endpoint
+app.post('/api/sync/poll', async (c) => {
+  try {
+    // Run polling in background
+    c.executionCtx.waitUntil((async () => {
+      const { manualPoll } = await import('./realtime-http');
+      await manualPoll(c.env);
+    })());
+    
+    return c.json({ message: 'Polling started' });
+  } catch (error: any) {
+    return c.json({ error: error.message }, 500);
+  }
+});
+
+app.get('/api/debug/check-snapshots', async (c) => {
+  try {
+    const db = c.get('db');
+    
+    // Check if tables exist using raw SQL with postgres.js
+    const { default: postgres } = await import('postgres');
+    const sql = postgres(c.env.WORKER_DATABASE_URL || c.env.DATABASE_URL);
+    
+    // Get list of tables
+    const tables = await sql`
+      SELECT table_name 
+      FROM information_schema.tables 
+      WHERE table_schema = 'public'
+    `;
+    
+    // Count records in each table
+    const studentCount = await sql`SELECT COUNT(*) as count FROM students`;
+    const snapshotCount = await sql`SELECT COUNT(*) as count FROM student_snapshots`;
+    const logCount = await sql`SELECT COUNT(*) as count FROM sync_logs`;
+    
+    await sql.end();
+    
+    return c.json({
+      tables: tables.map(t => t.table_name),
+      counts: {
+        students: parseInt(studentCount[0]?.count || '0'),
+        snapshots: parseInt(snapshotCount[0]?.count || '0'),
+        logs: parseInt(logCount[0]?.count || '0')
+      }
+    });
+  } catch (error: any) {
+    console.error('Debug check error:', error);
+    return c.json({ error: error.message, stack: error.stack }, 500);
   }
 });
