@@ -1,6 +1,28 @@
+@'
+# Dependencies
 node_modules/
+package-lock.json
+
+# Environment variables
 .dev.vars
+.env
+.env.local
+.env.production
+
+# Cloudflare
 .wrangler/
 dist/
-.env
+
+# Logs
 *.log
+npm-debug.log*
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Test files (optional)
+test-*.json
+test-*.js
+src/test-*
+'@ | Out-File -FilePath .gitignore -Encoding UTF8
