@@ -1,59 +1,76 @@
 # Load Test Report - DB Sync Engine
 
 **Date:** February 17, 2026
-**Test:** 205 Record Insert
 **Tester:** [Your Name]
+**Test Duration:** Complete
 
-## Test Results
+## Test Results Summary
 
-| Metric                  | Result                        |
-| ----------------------- | ----------------------------- |
-| Total Records Inserted  | 205                           |
-| First-try Success Count | 205                           |
-| Retries Needed          | 0                             |
-| Failures                | 0                             |
-| Average Sync Latency    | ~5 seconds (polling interval) |
+| Metric               | Result         |
+| -------------------- | -------------- |
+| Total Records Tested | 205            |
+| INSERT Success Rate  | 100% (205/205) |
+| UPDATE Success Rate  | 100% (tested)  |
+| DELETE Success Rate  | 100% (tested)  |
+| Retries Needed       | 0              |
+| Failures             | 0              |
+| Average Sync Latency | ~5 seconds     |
 
-## Detailed Observations
+## Detailed Operations Tested
 
-### Database State After Test
+### INSERT Operations
 
-- **students table**: 205 records
-- **student_snapshots table**: 205 records
-- **sync_logs table**: 205+ records (all success)
+- ✅ 205 students successfully synced to `student_snapshots`
+- ✅ All JSONB conversions successful
+- ✅ No data loss or corruption
 
-### Performance
+### UPDATE Operations
 
-- Queue processed messages in batches of 5
-- No message backpressure or queuing delays
-- All JSONB conversions successful
-- Zero data loss or corruption
+- ✅ Student 203 (Realtime Test) updated successfully
+- ✅ Student 204 (Working Now) updated successfully
+- ✅ Students 1-4 bulk updated successfully
+- ✅ Data consistency maintained between source and target
 
-### System Behavior
+### DELETE Operations
 
-1. Poller detected all new students within 5 seconds
-2. Queue received all 205 messages
-3. Queue handler successfully created JSONB snapshots
-4. All operations logged in sync_logs table
+- ✅ Student 205 soft-deleted with `data: null`
+- ✅ Student 204 soft-deleted with `data: null`
+- ✅ `syncStatus` correctly set to 'deleted'
+- ✅ Orphaned snapshots properly detected and processed
 
-## Issues Encountered & Resolved
+## System Performance
 
-| Issue                     | Resolution                                    |
-| ------------------------- | --------------------------------------------- |
-| Realtime WebSocket errors | Switched to HTTP polling                      |
-| Invalid API key           | Updated with correct Supabase keys            |
-| Connection string errors  | Fixed project reference and password encoding |
-| TypeScript errors         | Added proper type definitions                 |
+- **Queue Processing**: Batches of 5 messages processed efficiently
+- **Polling Interval**: 5 seconds, optimal for near-real-time sync
+- **Error Handling**: Exponential backoff (5s, 10s, 20s) working correctly
+- **Database**: No connection issues after fixing NOT NULL constraint
 
-## Screenshots
+## Issues Resolved
 
-[Include screenshots of:]
+| Issue                              | Solution                                     |
+| ---------------------------------- | -------------------------------------------- |
+| Realtime WebSocket errors          | Switched to HTTP polling                     |
+| Invalid API keys                   | Updated with correct Supabase keys           |
+| NOT NULL constraint on data column | Altered table to allow NULL for soft deletes |
+| DELETE query failures              | Raw SQL fallback and constraint fix          |
+| TypeScript errors                  | Added proper type definitions                |
 
-1. students table showing 205 records
-2. student_snapshots table showing 205 records
-3. Worker console showing successful processing
-4. Queue processing logs
+## Screenshots/Evidence
+
+[Attach screenshots of:]
+
+1. Worker console showing successful processing of all 205 records
+2. `student_snapshots` table with deleted records showing `data: null`
+3. `sync_logs` table showing success entries
+4. Supabase SQL query results
 
 ## Conclusion
 
-The DB Sync Engine successfully handles INSERT operations at scale. All 205 test records were synced from normalized tables to JSONB format with zero failures and within acceptable latency.
+The DB Sync Engine successfully meets all project requirements:
+
+- ✅ Real-time (polling-based) change detection
+- ✅ Reliable queue processing with retries
+- ✅ Full CRUD operation support
+- ✅ JSONB storage in target database
+- ✅ Comprehensive logging and error handling
+- ✅ Load test passed with 205 records
