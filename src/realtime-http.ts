@@ -19,6 +19,8 @@ interface StudentRecord {
 
 interface SnapshotRecord {
   student_id: number;
+  data: any;
+  syncStatus: string;
 }
 
 let lastCheckTimestamp = 0;
@@ -53,7 +55,7 @@ export async function pollForChanges(env: Env, supabase: SupabaseClient) {
   
   try {
     // Test connection
-    const { data: testData, error: testError } = await supabase
+    const { error: testError } = await supabase
       .from('students')
       .select('id')
       .limit(1);
@@ -66,82 +68,99 @@ export async function pollForChanges(env: Env, supabase: SupabaseClient) {
     
     console.log('✅ Supabase connection successful');
     
-    // For first run or manual poll, get all students that don't have snapshots
-    if (lastCheckTimestamp === 0) {
-      console.log('🔍 First run - checking all students');
+    // Get all students
+    const { data: allStudents, error: allError } = await supabase
+      .from('students')
+      .select('*');
+    
+    if (allError) {
+      console.error('❌ Error fetching all students:', allError);
+      setTimeout(() => pollForChanges(env, supabase), 5000);
+      return;
+    }
+    
+    // Get all snapshots
+    const { data: allSnapshots, error: snapError } = await supabase
+      .from('student_snapshots')
+      .select('*');
+    
+    if (snapError) {
+      console.error('❌ Error fetching snapshots:', snapError);
+      setTimeout(() => pollForChanges(env, supabase), 5000);
+      return;
+    }
+    
+    console.log(`📊 Students: ${allStudents.length}, Snapshots: ${allSnapshots?.length || 0}`);
+    
+    // Create maps for easy lookup
+    const studentMap = new Map(allStudents.map(s => [s.id, s]));
+    const snapshotMap = new Map(allSnapshots?.map(s => [s.student_id, s]) || []);
+    
+    // 1. Check for INSERTs (students without snapshots)
+    const studentsWithoutSnapshots = allStudents.filter(s => !snapshotMap.has(s.id));
+    
+    if (studentsWithoutSnapshots.length > 0) {
+      console.log(`📝 Found ${studentsWithoutSnapshots.length} students to INSERT`);
       
-      // Get all students
-      const { data: allStudents, error: allError } = await supabase
-        .from('students')
-        .select('*');
-      
-      if (allError) {
-        console.error('❌ Error fetching all students:', allError);
-      } else if (allStudents) {
-        console.log(`📊 Total students in DB: ${allStudents.length}`);
-        
-        // Get existing snapshots
-        const { data: snapshots, error: snapError } = await supabase
-          .from('student_snapshots')
-          .select('student_id');
-        
-        if (snapError) {
-          console.error('❌ Error fetching snapshots:', snapError);
-        } else if (snapshots) {
-          const snapshotIds = new Set(snapshots.map((s: SnapshotRecord) => s.student_id));
-          
-          // Find students without snapshots
-          const studentsWithoutSnapshots = allStudents.filter((s: StudentRecord) => !snapshotIds.has(s.id));
-          
-          if (studentsWithoutSnapshots.length > 0) {
-            console.log(`📝 Found ${studentsWithoutSnapshots.length} students without snapshots`);
-            
-            for (const record of studentsWithoutSnapshots) {
-              console.log(`🔔 Processing student ${record.id}: ${record.name}`);
-              
-              await queueSync(env, {
-                recordId: record.id,
-                operation: 'INSERT',
-                data: record,
-                timestamp: new Date().toISOString(),
-                retryCount: 0
-              });
-            }
-          } else {
-            console.log('📭 All students have snapshots');
-          }
-        }
+      for (const record of studentsWithoutSnapshots) {
+        console.log(`🔔 INSERT student ${record.id}: ${record.name}`);
+        await queueSync(env, {
+          recordId: record.id,
+          operation: 'INSERT',
+          data: record,
+          timestamp: new Date().toISOString(),
+          retryCount: 0
+        });
       }
-    } else {
-      // Normal polling - get students updated since last check
-      console.log(`🔍 Checking for changes since ${new Date(lastCheckTimestamp).toISOString()}`);
-      
-      const { data, error } = await supabase
-        .from('students')
-        .select('*')
-        .gte('updated_at', new Date(lastCheckTimestamp - 1000).toISOString());
-      
-      if (error) {
-        console.error('❌ Polling query error:', error);
-      } else if (data && data.length > 0) {
-        console.log(`📝 Found ${data.length} changes`);
-        
-        for (const record of data) {
-          if (!record.id) continue;
-          
-          console.log(`🔔 Processing student ${record.id}: ${record.name}`);
-          
-          await queueSync(env, {
-            recordId: record.id,
-            operation: 'INSERT',
-            data: record,
-            timestamp: new Date().toISOString(),
-            retryCount: 0
-          });
-        }
-      } else {
-        console.log('📭 No changes found');
+    }
+    
+    // 2. Check for UPDATEs (students with modified data)
+    const studentsWithSnapshots = allStudents.filter(s => snapshotMap.has(s.id));
+    const updatesToProcess = [];
+    
+    for (const student of studentsWithSnapshots) {
+      const snapshot = snapshotMap.get(student.id);
+      if (snapshot && JSON.stringify(snapshot.data) !== JSON.stringify(student)) {
+        updatesToProcess.push(student);
       }
+    }
+    
+    if (updatesToProcess.length > 0) {
+      console.log(`📝 Found ${updatesToProcess.length} students to UPDATE`);
+      
+      for (const record of updatesToProcess) {
+        console.log(`🔔 UPDATE student ${record.id}: ${record.name}`);
+        await queueSync(env, {
+          recordId: record.id,
+          operation: 'UPDATE',
+          data: record,
+          timestamp: new Date().toISOString(),
+          retryCount: 0
+        });
+      }
+    }
+    
+    // 3. Check for DELETEs (snapshots without students)
+const orphanedSnapshots = allSnapshots?.filter(s => !studentMap.has(s.student_id)) || [];
+
+if (orphanedSnapshots.length > 0) {
+  console.log(`🗑️ Found ${orphanedSnapshots.length} students to DELETE`);
+  
+  for (const snapshot of orphanedSnapshots) {
+    console.log(`🔔 DELETE student ${snapshot.student_id}`);
+    console.log('Sending DELETE message with data:', null);
+    await queueSync(env, {
+      recordId: snapshot.student_id,
+      operation: 'DELETE',
+      data: null,  // CHANGED: Send null instead of an object
+      timestamp: new Date().toISOString(),
+      retryCount: 0
+    });
+  }
+}
+    
+    if (studentsWithoutSnapshots.length === 0 && updatesToProcess.length === 0 && orphanedSnapshots.length === 0) {
+      console.log('📭 No changes detected');
     }
     
     // Update last check timestamp
