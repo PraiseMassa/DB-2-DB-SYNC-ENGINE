@@ -42,14 +42,14 @@ This system automatically syncs data from a normalized `students` table to a `st
 
 ## Quick Start
 
-### Prerequisites
+## Prerequisites
 
 - Node.js 18+
 - Cloudflare Account
 - Supabase Account
 - Wrangler CLI (`npm install -g wrangler`)
 
-### Install deoendencies
+## Install dependencies
 
 npm install
 
@@ -64,15 +64,15 @@ cd db-sync-engine
 
 Create .dev.vars file:
 
-SUPABASE_URL=https://your-project.supabase.co
-SUPABASE_ANON_KEY=your-anon-key
-SUPABASE_SERVICE_ROLE_KEY=your-service-role-key
-DATABASE_URL=postgresql://postgres.your-project:password@pooler.supabase.com:5432/postgres
+SUPABASE_URL=https://your-project.supabase.co \
+SUPABASE_ANON_KEY=your-anon-key \
+SUPABASE_SERVICE_ROLE_KEY=your-service-role-key \
+DATABASE_URL=postgresql://postgres.your-project:password@pooler.supabase.com:5432/postgres \
 WORKER_DATABASE_URL=postgresql://postgres.your-project:password@pooler.supabase.com:6543/postgres?pgbouncer=true
 
 ## Run database migrations
 
-npm run db:generate
+npm run db:generate \
 npm run db:migrate
 
 ## Start the worker locally
@@ -81,40 +81,41 @@ npm run dev
 
 ## Queue Retry Logic
 
-Exponential backoff: 5s, 10s, 20s
+Exponential backoff: 5s, 10s, 20s \
 const delaySeconds = Math.pow(2, retryCount) \* 5;
 
 ### API Endpoints
 
-Method Endpoint Description
-GET / Health check
-POST /api/sync/backfill Sync all existing students
-GET /api/sync/status/:studentId? Get sync status
-GET /api/sync/logs View sync logs
-POST /api/sync/reconcile Find out-of-sync records
-POST /api/sync/retry-failed Retry failed records
-POST /api/sync/poll Manually trigger change detection
+| Method | Endpoint                     | Description                       |
+| ------ | ---------------------------- | --------------------------------- |
+| GET    | /                            | Health check                      |
+| POST   | /api/sync/backfill           | Sync all existing students        |
+| GET    | /api/sync/status/:studentId? | Get sync status                   |
+| GET    | /api/sync/logs               | View sync logs                    |
+| POST   | /api/sync/reconcile          | Find out-of-sync records          |
+| POST   | /api/sync/retry-failed       | Retry failed records              |
+| POST   | /api/sync/poll               | Manually trigger change detection |
 
 ### How It Works
 
 Change Detection Flow
-Polling: Every 5 seconds, the worker queries both tables
-Comparison: Compares source data with target JSONB snapshots
-Missing snapshots → Queue INSERT
-Data mismatch → Queue UPDATE
-Orphaned snapshots → Queue DELETE
-Queue: Changes are sent to Cloudflare Queue
-Processing: Queue consumer processes with retry logic
-Storage: Data stored as JSONB in target database
+Polling: Every 5 seconds, the worker queries both tables \
+Comparison: Compares source data with target JSONB snapshots \
+Missing snapshots → Queue INSERT \
+Data mismatch → Queue UPDATE \
+Orphaned snapshots → Queue DELETE \
+Queue: Changes are sent to Cloudflare Queue \
+Processing: Queue consumer processes with retry logic \
+Storage: Data stored as JSONB in target database \
 Logging: All operations recorded in sync_logs
 
 ## Load Test Results
 
-Successfully processed 205 records with:
-100% INSERT success rate
-0 retries needed
-0 failures
-Average latency: ~5 seconds
+Successfully processed 205 records with: \
+100% INSERT success rate \
+0 retries needed \
+0 failures \
+Average latency: ~5 seconds \
 See LOAD_TEST_REPORT.md for detailed results.
 
 ## Testing
@@ -131,8 +132,8 @@ curl -X POST http://localhost:8787/api/test/insert-raw \
 
 # Check sync status
 
-curl http://localhost:8787/api/sync/logs
-curl http://localhost:8787/api/sync/status
+curl http://localhost:8787/api/sync/logs \
+ curl http://localhost:8787/api/sync/status
 
 ### Deployment
 
@@ -142,38 +143,38 @@ npm run deploy
 
 # Set production secrets
 
-npx wrangler secret put SUPABASE_URL
-npx wrangler secret put SUPABASE_ANON_KEY
-npx wrangler secret put SUPABASE_SERVICE_ROLE_KEY
-npx wrangler secret put DATABASE_URL
-npx wrangler secret put WORKER_DATABASE_URL
+npx wrangler secret put SUPABASE_URL \
+ npx wrangler secret put SUPABASE_ANON_KEY \
+ npx wrangler secret put SUPABASE_SERVICE_ROLE_KEY \
+ npx wrangler secret put DATABASE_URL \
+ npx wrangler secret put WORKER_DATABASE_URL
 
 ### Project Structure
 
-text
 db-sync-engine/
-├── src/
-│ ├── index.ts # Main worker with API endpoints
-│ ├── realtime-http.ts # Polling logic
-│ ├── queue-worker.ts # Queue handler
-│ ├── db/
-│ │ └── schema.ts # Database schema
-│ └── seed-students.ts # Load test script
-├── .dev.vars # Local environment variables
-├── .gitignore # Git ignore file
-├── wrangler.toml # Cloudflare configuration
-├── package.json # Dependencies
-├── tsconfig.json # TypeScript configuration
-├── README.md # This file
-├── LOAD_TEST_REPORT.md # Load test results
-└── drizzle.config.ts # Drizzle ORM config
+
+- src/
+- - index.ts # Main worker with API endpoints
+- - realtime-http.ts # Polling logic
+- - queue-worker.ts # Queue handler
+- - db/
+- - - schema.ts # Database schema
+- - seed-students.ts # Load test script
+- .dev.vars # Local environment variables
+- .gitignore # Git ignore file
+- wrangler.toml # Cloudflare configuration
+- package.json # Dependencies
+- tsconfig.json # TypeScript configuration
+- README.md # This file
+- LOAD_TEST_REPORT.md # Load test results
+- drizzle.config.ts # Drizzle ORM config
 
 ### Key Learnings
 
-WebSocket Limitations: Cloudflare Workers have WebSocket limitations, solved with HTTP polling
-NOT NULL Constraints: Soft deletes require nullable JSONB columns
-Queue Reliability: Exponential backoff ensures reliable processing
-Error Handling: Comprehensive logging and retry logic
+- WebSocket Limitations: Cloudflare Workers have WebSocket limitations, solved with HTTP polling
+- NOT NULL Constraints: Soft deletes require nullable JSONB columns
+- Queue Reliability: Exponential backoff ensures reliable processing
+- Error Handling: Comprehensive logging and retry logic
 
 ## Issues Encountered & Resolved
 
