@@ -196,6 +196,29 @@ db-sync-engine/
 - Back-fill migrates all existing data
 - 200-record load test completed successfully
 
+## Screenshots
+
+### worker console
+
+worker console.png \
+polling results of each entry
+
+### students table entries
+
+students.png \
+The rows in students table with 200 enties
+
+### student_snapshot synced
+
+student_snapshot.png \
+Reflected inserts synced from students
+
+### insert, delete and update on sync_logs
+
+Sync_logs_Insert.png \
+Sync_logs_update-delete.png \
+Logs of all synced transactions.
+
 ## Conclusion
 
 **LOAD TEST RESULT: PASSED**
